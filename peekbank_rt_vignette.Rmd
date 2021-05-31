@@ -1,0 +1,189 @@
+---
+title: "Peekbank RT Demo"
+author: "Martin Zettersten & the Peekbank Team"
+date: "5/31/2021"
+output: html_document
+---
+
+# Download peekbankr
+
+If you haven't downloaded peekbankr (https://github.com/langcog/peekbankr) yet, be sure to do so first by uncommenting the lines below.
+
+```{r}
+# install.packages("remotes") # can also use devtools
+# remotes::install_github("langcog/peekbankr")
+```
+
+
+# Preliminaries and data loading
+
+Load packages. Since it takes a while to download and join the data, you probably want to just do that once, and then save the resulting dataset. Setting the parameter FIRST_TIME to FALSE after you run the script the first time allows you to bypass the data download process on subsequent runs. You can also use the most recent data file uploaded to GitHub.
+
+```{r}
+FIRST_TIME = FALSE # set to true first time to download data from DB
+
+library(peekbankr)
+library(tidyverse)
+library(here)
+
+knitr::opts_chunk$set(cache = TRUE, arn = FALSE,warning=FALSE, message = FALSE,cache.lazy = FALSE)
+
+```
+
+The next steps demonstrate how to
+1. Connect to the peekbank database
+2. Pull individual tables using peekbankr functions ("get_[name_of_table]"). For details on the specific tables, including a codebook, see the peekbank documentation: https://peekbank.stanford.edu/docs/documentation/
+3. Join these tables together to get a single tidy dataset in "long" format (each row is an observation at a particular timepoint)
+
+```{r, eval = FIRST_TIME}
+#connect to the database
+con <- connect_to_peekbank()
+#get all of the tables you need
+datasets <- get_datasets(connection = con) %>% collect()
+administrations <- get_administrations(connection = con) %>% collect()
+subjects <- get_subjects(connection = con) %>% collect()
+aoi_timepoints <- get_aoi_timepoints(connection = con) %>% collect()
+stimuli <- get_stimuli(connection = con) %>% collect()
+trial_types <- get_trial_types(connection = con) %>% collect()
+trials <- get_trials(connection = con)  %>% collect()
+
+aoi_data_joined <- aoi_timepoints %>%
+  right_join(administrations) %>%
+  right_join(subjects) %>%
+  right_join(trials) %>%
+  right_join(trial_types) %>%
+  right_join(datasets) %>%
+  mutate(stimulus_id = target_id) %>% #just joining in the target properties. Add a second join here if the distractor info is needed too
+  right_join(stimuli)
+
+save(file = here("data","aoi_data_joined.Rds"), aoi_data_joined)
+```
+
+# Load cached data
+
+```{r}
+load(file = here("data","aoi_data_joined.Rds"))
+```
+
+# Function forcomputing RTs
+
+```{r}
+get_rt <- function (rle_data, SAMPLING_RATE = 40) {
+  # end if no data
+  if (is.null(rle_data$values) | is.null(rle_data$lengths)) {
+    return(tibble(rt = NA, 
+                  shift_type = NA))
+  }
+  
+  onset_aoi <- rle_data$values[1] # zero point AOI
+  
+  # end if missing for start
+  if (!(onset_aoi %in% c("target","distractor"))) {
+    return(tibble(rt = NA, 
+                  shift_type = "other"))
+  }
+
+  first_landing <- rle_data$values[rle_data$values != onset_aoi &
+                                    rle_data$values %in% c("target","distractor")][1]
+
+  # end if no shift
+  if (is.na(first_landing)) {
+    return(tibble(rt = NA, 
+                  shift_type = "no shift"))
+  }
+  
+  shift_type <- case_when(onset_aoi == "distractor" &
+                           first_landing == "target" ~ "D-T",
+                         onset_aoi == "target" &
+                           first_landing == "distractor" ~ "T-D",
+                         TRUE ~ "other")
+
+  first_landing_idx <- which(rle_data$values == first_landing)[1]
+  
+  values_before_first_landing <- rle_data$lengths[1:(first_landing_idx-1)]
+
+  # rt is the number of samples happening before arrival + 1 
+  # (first sample of arrival)
+  # times the length of a sample
+  rt <- (sum(values_before_first_landing) + 1) * (1000/SAMPLING_RATE)
+
+  return(tibble(rt = rt, 
+                shift_type = shift_type))
+}
+```
+
+# Process RTs in Peekbank dataset
+
+```{r}
+#reformat data
+rt_data <- aoi_data_joined %>%
+  filter(any(t_norm == 0), # must have data at 0
+         t_norm >= 0) %>% # only pass data after 0
+  group_by(subject_id, administration_id, trial_id) %>%
+  summarise(lengths = rle(aoi)$lengths, 
+            values = rle(aoi)$values) #run-length-encoded format expected
+
+# compute RTs
+rts <- rt_data %>%
+  group_by(subject_id, administration_id, trial_id) %>%
+  nest() %>%
+  mutate(data = lapply(data, get_rt)) %>% 
+  unnest(cols = c(data)) 
+
+#join back in relevant data
+rts <- left_join(rts, 
+                 aoi_data_joined %>%
+                   select(subject_id, administration_id, trial_id, 
+                          age, dataset_name, 
+                          english_stimulus_label, 
+                          stimulus_novelty, trial_order) %>%
+                   distinct())
+```
+
+# Select only familiar RTs
+
+```{r}
+fam_rts <- filter(rts, stimulus_novelty == "familiar")
+```
+
+# Overall RT histograms
+
+```{r}
+ggplot(filter(fam_rts, shift_type %in% c("T-D", "D-T")), 
+       aes(x = rt, fill = shift_type)) + 
+  # geom_histogram() + 
+  geom_density(alpha = .5) + 
+  facet_wrap(~dataset_name)
+```
+
+# Just D-T RTs
+
+```{r}
+fam_dt_rts <- rts %>%
+  filter(stimulus_novelty == "familiar",
+         shift_type == "D-T", 
+         !is.na(rt))
+```
+
+## Histogram by Dataset
+
+```{r}
+ggplot(fam_dt_rts, 
+       aes(x = rt)) + 
+  geom_histogram() + 
+  facet_wrap(~dataset_name, scales = "free_y")
+```
+
+## Histogram by Dataset on log-scale
+
+Since RT distributions are typically skewed with long tails, people often transform them (e.g. on a log-scale) so that the distribution approximates a normal distribution a bit better.
+
+```{r}
+ggplot(fam_dt_rts, 
+       aes(x = rt)) + 
+  geom_histogram() + 
+  scale_x_log10() + 
+  facet_wrap(~dataset_name, scales = "free_y")
+```
+
+
