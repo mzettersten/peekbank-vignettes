@@ -25,6 +25,8 @@ FIRST_TIME = FALSE # set to true first time to download data from DB
 library(peekbankr)
 library(tidyverse)
 library(here)
+library(lme4)
+library(lmerTest)
 
 knitr::opts_chunk$set(cache = TRUE, arn = FALSE,warning=FALSE, message = FALSE,cache.lazy = FALSE)
 
@@ -135,15 +137,18 @@ rts <- left_join(rts,
                  aoi_data_joined %>%
                    select(subject_id, administration_id, trial_id, 
                           age, dataset_name, 
+                          native_language,
                           english_stimulus_label, 
                           stimulus_novelty, trial_order) %>%
                    distinct())
 ```
 
-# Select only familiar RTs
+# Select only familiar RTs and English monolinguals
 
 ```{r}
-fam_rts <- filter(rts, stimulus_novelty == "familiar")
+fam_rts <- rts %>%
+  filter(stimulus_novelty == "familiar") %>%
+  filter(native_language == "eng")
 ```
 
 # Overall RT histograms
@@ -159,9 +164,8 @@ ggplot(filter(fam_rts, shift_type %in% c("T-D", "D-T")),
 # Just D-T RTs
 
 ```{r}
-fam_dt_rts <- rts %>%
-  filter(stimulus_novelty == "familiar",
-         shift_type == "D-T", 
+fam_dt_rts <- fam_rts %>%
+  filter(shift_type == "D-T", 
          !is.na(rt))
 ```
 
@@ -186,4 +190,67 @@ ggplot(fam_dt_rts,
   facet_wrap(~dataset_name, scales = "free_y")
 ```
 
+## Compute overall subject RT averages
+
+```{r}
+
+#subject-level averages
+rt_average_subj <- fam_dt_rts %>%
+  group_by(dataset_name,subject_id,age, native_language,stimulus_novelty) %>%
+  #### TO-DO: Filter by length cutoff???###
+  filter(rt<=1800) %>%
+  summarize(
+    N = n(),
+    average_rt=mean(rt,na.rm=TRUE)
+  )
+```
+
+## Plot RT by age
+
+```{r}
+ggplot(rt_average_subj,aes(age,average_rt))+
+  geom_point()+
+  geom_smooth()
+
+ggplot(filter(rt_average_subj,age<=26),aes(age,average_rt))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~dataset_name)
+```
+
+
+## Fit LMER model on RTs
+
+```{r}
+m <- lmer(average_rt ~ 1 + (1|dataset_name),data=rt_average_subj)
+summary(m)
+confint(m, method="Wald")
+```
+
+## Look at just adams and marchman
+
+```{r}
+m <- lmer(average_rt ~ 1 + (1|subject_id),data=filter(rt_average_subj,dataset_name=="adams_marchman_2018"))
+summary(m)
+
+ggplot(filter(rt_average_subj,dataset_name=="adams_marchman_2018"),aes(average_rt))+
+  geom_histogram()
+ggplot(filter(fam_dt_rts,dataset_name=="adams_marchman_2018"),aes(rt))+
+  geom_histogram()
+
+mean(filter(fam_dt_rts,dataset_name=="adams_marchman_2018")$rt)
+median(filter(fam_dt_rts,dataset_name=="adams_marchman_2018")$rt)
+```
+
+## Look at just pomper&saffran
+
+```{r}
+m <- lm(average_rt ~ 1,data=filter(rt_average_subj,dataset_name=="pomper_saffran_2016"))
+summary(m)
+
+ggplot(filter(rt_average_subj,dataset_name=="adams_marchman_2018"),aes(average_rt))+
+  geom_histogram()
+
+
+```
 
