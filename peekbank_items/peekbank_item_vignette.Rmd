@@ -46,16 +46,14 @@ The next steps demonstrate how to
 3. Join these tables together to get a single tidy dataset in "long" format (each row is an observation at a particular timepoint)
 
 ```{r, eval = FIRST_TIME}
-#connect to the database
-con <- connect_to_peekbank()
 #get all of the tables you need
-datasets <- get_datasets(connection = con) %>% collect()
-administrations <- get_administrations(connection = con) %>% collect()
-subjects <- get_subjects(connection = con) %>% collect()
-aoi_timepoints <- get_aoi_timepoints(connection = con) %>% collect()
-stimuli <- get_stimuli(connection = con) %>% collect()
-trial_types <- get_trial_types(connection = con) %>% collect()
-trials <- get_trials(connection = con)  %>% collect()
+datasets <- get_datasets()
+administrations <- get_administrations()
+subjects <- get_subjects()
+aoi_timepoints <- get_aoi_timepoints()
+stimuli <- get_stimuli()
+trial_types <- get_trial_types()
+trials <- get_trials()
 
 aoi_data_joined <- aoi_timepoints %>%
   right_join(administrations) %>%
@@ -89,6 +87,10 @@ t_max <- 2000
 max_prop_missing <- 0.5
 #age bin size (number of months per bin)
 age_bin_size <- 6
+#add baseline window for computing baseline-corrected means
+baseline_window <- c(-2000,0)
+#minimum baseline duration in ms
+min_baseline <- 500
 
 
 by_trial_means <- aoi_data_joined %>%
@@ -112,6 +114,36 @@ by_trial_means <- aoi_data_joined %>%
   #remove trials with insufficient looking to target or distractor
   filter(prop_missing<=max_prop_missing)
 
+#compute baseline looking (for baseline-corrected means)
+by_trial_baseline <- aoi_data_joined %>%
+  #restrict to english datasets (this is just because there are so few non-English datasets atm)
+  filter(native_language == "eng") %>%
+  #restrict age range
+  filter(age > 12, age <= 60) %>%
+  # familiar target items only %>%
+  filter(stimulus_novelty == "familiar") %>%
+  #window of analysis
+  filter(t_norm >= baseline_window[1], t_norm <= baseline_window[2]) %>%
+  #bin ages (can adjust size of age bins here)
+  mutate(age_binned = cut(age, seq(12,60,age_bin_size))) %>%
+  rename(target_label = english_stimulus_label) %>%
+  group_by(dataset_name,subject_id, trial_id, target_label, 
+           age, age_binned) %>%
+  summarise(
+   baseline_n=n(),
+   baseline_ms=baseline_n*25,
+    baseline_looking = sum(aoi == "target", na.rm = TRUE) / 
+              (sum(aoi == "target", na.rm=TRUE) + 
+                 sum(aoi=="distractor", na.rm=TRUE)),
+            prop_baseline_missing = mean(aoi %in% c("missing","other"), na.rm = TRUE)) %>%
+  #remove trials with insufficient looking to target or distractor
+  filter(prop_baseline_missing<=max_prop_missing& baseline_ms>=500)
+
+#combine
+by_trial_target_means <- by_trial_means %>%
+  left_join(by_trial_baseline) %>%
+  mutate(corrected_target_looking=prop_target_looking-baseline_looking)
+
 ```
 
 # Average within subjects, by-item and by-dataset
@@ -119,12 +151,13 @@ by_trial_means <- aoi_data_joined %>%
 One could consider excluding participants based on the number of trials a participant contributes overall here.
 
 ```{r}
-by_subj_item_means <- by_trial_means %>%
+by_subj_item_means <- by_trial_target_means %>%
   group_by(dataset_name,subject_id, target_label, 
            age, age_binned) %>%
   summarise(
     trial_num=n(),
-    avg_target_looking = mean(prop_target_looking,na.rm=TRUE)
+    avg_target_looking = mean(prop_target_looking,na.rm=TRUE),
+    avg_corrected_target_looking=mean(corrected_target_looking,na.rm=TRUE)
   )
 ```
 
@@ -135,7 +168,8 @@ by_item_means <- by_subj_item_means %>%
   group_by(dataset_name, target_label,age_binned) %>%
   summarise(
     subj_n=n(),
-    target_looking = mean(avg_target_looking,na.rm=TRUE)
+    target_looking = mean(avg_target_looking,na.rm=TRUE),
+    corrected_looking = mean(avg_corrected_target_looking,na.rm=TRUE)
   )
 ```
 
@@ -151,6 +185,14 @@ ggplot(by_item_means,aes(reorder(target_label,target_looking,mean),target_lookin
   theme(axis.text.x=element_text(angle=90,size=4,vjust=0.5))+
   xlab("Target Label")+
   ylab("Proportion Target Looking")
+
+ggplot(filter(by_item_means,!is.na(corrected_looking)),aes(reorder(target_label,corrected_looking,mean),corrected_looking,color=target_label))+
+  geom_boxplot()+
+  #geom_point()+
+  theme(legend.position="none")+
+  theme(axis.text.x=element_text(angle=90,size=4,vjust=0.5))+
+  xlab("Target Label")+
+  ylab("Proportion Corrected Target Looking")
 ```
 
 # Mega Plot of items by age and dataset
@@ -164,11 +206,12 @@ by_item_means_across_dataset <- by_item_means %>%
   group_by(age_binned,target_label) %>%
   summarize(
     dataset_num=n(),
-    prop_target_looking=mean(target_looking,na.rm=TRUE)
+    prop_target_looking=mean(target_looking,na.rm=TRUE),
+    corrected_target_looking=mean(corrected_looking,na.rm=TRUE)
   )
 
 by_item_means <- by_item_means %>%
-  left_join(select(by_item_means_across_dataset,-prop_target_looking))
+  left_join(select(by_item_means_across_dataset,-prop_target_looking,-corrected_target_looking))
 
 
 ggplot(filter(by_item_means,dataset_num>1),aes(target_label,target_looking,fill=dataset_name,color=dataset_name))+
@@ -198,6 +241,20 @@ ggplot(filter(by_item_means,age_binned=="(12,18]"&dataset_num>1),aes(reorder(tar
   geom_hline(yintercept=0.5,linetype="dashed")
 ```
 
+Baseline-corrected target accuracy
+
+```{r}
+ggplot(filter(by_item_means,age_binned=="(12,18]"&dataset_num>1&!is.na(corrected_looking)),aes(reorder(target_label,corrected_looking,mean),corrected_looking,color=target_label))+
+  geom_boxplot()+
+  #geom_point()+
+  theme(legend.position="none")+
+  theme(axis.text.x=element_text(angle=90,size=9,vjust=0.5))+
+  xlab("Target Label")+
+  ylab("Baseline-corrected Target Looking")+
+  geom_hline(yintercept=0,linetype="dashed")
+```
+
+
 ### 18-24-months-olds
 
 Focusing on (ordered) item accuracy just for infants in the 18-24 month age range, appearing in more than one dataset
@@ -211,6 +268,19 @@ ggplot(filter(by_item_means,age_binned=="(18,24]"&dataset_num>1),aes(reorder(tar
   xlab("Target Label")+
   ylab("Proportion Target Looking")+
   geom_hline(yintercept=0.5,linetype="dashed")
+```
+
+Baseline-corrected target accuracy
+
+```{r}
+ggplot(filter(by_item_means,age_binned=="(18,24]"&dataset_num>1&!is.na(corrected_looking)),aes(reorder(target_label,corrected_looking,mean),corrected_looking,color=target_label))+
+  geom_boxplot()+
+  #geom_point()+
+  theme(legend.position="none")+
+  theme(axis.text.x=element_text(angle=90,size=9,vjust=0.5))+
+  xlab("Target Label")+
+  ylab("Baseline-corrected Target Looking")+
+  geom_hline(yintercept=0,linetype="dashed")
 ```
 
 ### 24-30-months-olds
@@ -228,6 +298,19 @@ ggplot(filter(by_item_means,age_binned=="(24,30]"&dataset_num>1),aes(reorder(tar
   geom_hline(yintercept=0.5,linetype="dashed")
 ```
 
+Baseline-corrected accuracy
+
+```{r}
+ggplot(filter(by_item_means,age_binned=="(24,30]"&dataset_num>1&!is.na(corrected_looking)),aes(reorder(target_label,corrected_looking,mean),corrected_looking,color=target_label))+
+  geom_boxplot()+
+  #geom_point()+
+  theme(legend.position="none")+
+  theme(axis.text.x=element_text(angle=90,size=9,vjust=0.5))+
+  xlab("Target Label")+
+  ylab("Baseline-corrected Target Looking")+
+  geom_hline(yintercept=0,linetype="dashed")
+```
+
 ### 30-36-months-olds
 
 Focusing on (ordered) item accuracy just for infants in the 30-36 month age range, appearing in more than one dataset
@@ -241,5 +324,36 @@ ggplot(filter(by_item_means,age_binned=="(30,36]"&dataset_num>1),aes(reorder(tar
   xlab("Target Label")+
   ylab("Proportion Target Looking")+
   geom_hline(yintercept=0.5,linetype="dashed")
+```
+
+Baseline-corrected accuracy
+
+```{r}
+ggplot(filter(by_item_means,age_binned=="(30,36]"&dataset_num>1&!is.na(corrected_looking)),aes(reorder(target_label,corrected_looking,mean),corrected_looking,color=target_label))+
+  geom_boxplot()+
+  #geom_point()+
+  theme(legend.position="none")+
+  theme(axis.text.x=element_text(angle=90,size=9,vjust=0.5))+
+  xlab("Target Label")+
+  ylab("Baseline-corrected Target Looking")+
+  geom_hline(yintercept=0,linetype="dashed")
+```
+
+## Predict from AOA
+
+```{r}
+aoas <- read_csv(here("peekbank_items","data","aoas_wordbank_ws_produces.csv"))
+
+by_item_means <- left_join(by_item_means,aoas)
+
+ggplot(by_item_means,aes(aoa,target_looking))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~age_binned)
+
+ggplot(by_item_means,aes(aoa,corrected_looking))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~age_binned)
 ```
 
