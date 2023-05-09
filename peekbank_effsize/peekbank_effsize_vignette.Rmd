@@ -240,7 +240,7 @@ forest(meta_model,header="9-15-month-olds")
 ```{r}
 #using the metafor package
 #this is a little hacky, in order to get the effect size for a one-sample test against chance
-effect_sizes_15_21 <- escalc(measure="SMD",m1i=mean_target,m2i=chance,sd1i=sd_target,sd2i=sd_target,n1i=subj_n,n2i=subj_n,data=filter(by_dataset_age_means,age_binned=="(9,15]"),slab=dataset_name)
+effect_sizes_15_21 <- escalc(measure="SMD",m1i=mean_target,m2i=chance,sd1i=sd_target,sd2i=sd_target,n1i=subj_n,n2i=subj_n,data=filter(by_dataset_age_means,age_binned=="(15,21]"),slab=dataset_name)
 meta_model <- rma(yi,vi,data=effect_sizes_15_21)
 meta_model
 ```
@@ -255,7 +255,7 @@ forest(meta_model,header="15-21-month-olds")
 ```{r}
 #using the metafor package
 #this is a little hacky, in order to get the effect size for a one-sample test against chance
-effect_sizes_21_27 <- escalc(measure="SMD",m1i=mean_target,m2i=chance,sd1i=sd_target,sd2i=sd_target,n1i=subj_n,n2i=subj_n,data=filter(by_dataset_age_means,age_binned=="(9,15]"),slab=dataset_name)
+effect_sizes_21_27 <- escalc(measure="SMD",m1i=mean_target,m2i=chance,sd1i=sd_target,sd2i=sd_target,n1i=subj_n,n2i=subj_n,data=filter(by_dataset_age_means,age_binned=="(21,27]"),slab=dataset_name)
 meta_model <- rma(yi,vi,data=effect_sizes_21_27)
 meta_model
 ```
