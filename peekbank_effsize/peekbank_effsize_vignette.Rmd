@@ -52,7 +52,7 @@ The next steps demonstrate how to
 datasets <- get_datasets()
 administrations <- get_administrations()
 subjects <- get_subjects()
-aoi_timepoints <- get_aoi_timepoints()
+aoi_timepoints <- get_aoi_timepoints(rle=FALSE)
 stimuli <- get_stimuli()
 trial_types <- get_trial_types()
 trials <- get_trials()
